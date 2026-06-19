@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="FStreamHash/FStreamHash.vcxproj" Id="9c8fd630-d4b8-4e16-b47a-bb6fed5441fd" />
+</Solution>
