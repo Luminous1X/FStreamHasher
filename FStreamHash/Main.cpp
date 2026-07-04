@@ -1,6 +1,3 @@
-// std::getenv trips MSVC's "unsafe function" deprecation; it's used here only
-// for optional config paths, so silence the warning rather than switching to
-// the non-portable _dupenv_s.
 #define _CRT_SECURE_NO_WARNINGS
 #include <iostream>
 #include <fstream>
@@ -11,13 +8,6 @@
 #include <sodium.h>
 
 
-// ---------------------------------------------------------------------------
-// Configuration / paths
-// ---------------------------------------------------------------------------
-
-// Both paths are overridable via environment variables so the program isn't
-// tied to whatever directory it happens to run from. Falls back to filenames
-// in the working directory when the variables aren't set.
 static const char* creds_path() {
 	const char* p = std::getenv("FSTREAMHASH_CREDS");
 	return (p && *p) ? p : "Creds.txt";
@@ -29,18 +19,6 @@ static const char* pepper_path() {
 }
 
 
-// ---------------------------------------------------------------------------
-// Pepper (keyed-hash key)
-// ---------------------------------------------------------------------------
-
-// Loads the 32-byte pepper key used to derive username lookup hashes. On first
-// run the key file won't exist, so we generate a fresh random key and persist
-// it. The pepper makes the username digests deterministic (so we can search by
-// username) while keeping plaintext usernames out of the creds file.
-//
-// NOTE: this is not secret-grade protection. Anyone holding both pepper.key and
-// Creds.txt can run a dictionary attack to recover usernames. The pepper just
-// raises the bar above storing usernames in the clear.
 static bool load_or_create_pepper(unsigned char key[crypto_generichash_KEYBYTES]) {
 	std::ifstream in(pepper_path(), std::ios::binary);
 	if (in.is_open()) {
@@ -48,8 +26,6 @@ static bool load_or_create_pepper(unsigned char key[crypto_generichash_KEYBYTES]
 		if (in.gcount() == crypto_generichash_KEYBYTES) {
 			return true;
 		}
-		// File exists but is the wrong size / truncated: refuse rather than
-		// silently regenerating, which would orphan every existing record.
 		std::cout << "Pepper key file is corrupt; refusing to continue.\n";
 		return false;
 	}
@@ -64,9 +40,6 @@ static bool load_or_create_pepper(unsigned char key[crypto_generichash_KEYBYTES]
 	return out.good();
 }
 
-// Derives the searchable lookup token for a username: keyed BLAKE2b over the
-// username, hex-encoded. Same username + same key always yields the same hex,
-// which is what lets us find a user's record without storing the name.
 static std::string lookup_hash(const std::string& user,
 	const unsigned char key[crypto_generichash_KEYBYTES]) {
 	unsigned char digest[crypto_generichash_BYTES];
@@ -80,13 +53,6 @@ static std::string lookup_hash(const std::string& user,
 }
 
 
-// ---------------------------------------------------------------------------
-// Record storage
-// ---------------------------------------------------------------------------
-
-// One account per line in Creds.txt: "<username_lookup_hex>:<argon2_pw_hash>".
-// ':' is a safe delimiter because Argon2 encoded strings only use '$', base64
-// (A-Za-z0-9+/), ',' and '=' and the hex digest is purely [0-9a-f].
 struct Record {
 	std::string userHex;
 	std::string pwHash;
@@ -96,7 +62,6 @@ static std::vector<Record> load_records() {
 	std::vector<Record> records;
 	std::ifstream in(creds_path());
 	if (!in.is_open()) {
-		// Missing file just means no accounts yet, not an error.
 		return records;
 	}
 
@@ -107,7 +72,7 @@ static std::vector<Record> load_records() {
 		}
 		std::string::size_type sep = line.find(':');
 		if (sep == std::string::npos) {
-			continue; // skip malformed lines defensively
+			continue;
 		}
 		Record r;
 		r.userHex = line.substr(0, sep);
@@ -133,7 +98,6 @@ static bool save_records(const std::vector<Record>& records) {
 	return true;
 }
 
-// Returns the index of the record matching userHex, or -1 if not found.
 static int find_record(const std::vector<Record>& records, const std::string& userHex) {
 	for (std::size_t i = 0; i < records.size(); ++i) {
 		if (records[i].userHex == userHex) {
@@ -144,15 +108,6 @@ static int find_record(const std::vector<Record>& records, const std::string& us
 }
 
 
-// ---------------------------------------------------------------------------
-// Account actions
-// ---------------------------------------------------------------------------
-
-// Registers a new account: prompts for a username + password, rejects the
-// username if it already exists, hashes the password with libsodium's
-// Argon2id, and appends the record. crypto_pwhash_str() embeds the algorithm,
-// opslimit, memlimit, and salt directly in the output, so the stored hash is
-// fully self-describing for later verification.
 static void create(const unsigned char key[crypto_generichash_KEYBYTES]) {
 	std::string user, pass;
 	std::cout << "Enter Username : \n";
@@ -170,8 +125,6 @@ static void create(const unsigned char key[crypto_generichash_KEYBYTES]) {
 	char hashed[crypto_pwhash_STRBYTES];
 	if (crypto_pwhash_str(hashed, pass.c_str(), pass.size(),
 		crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0) {
-		// Only fails if the system can't allocate the memory the requested
-		// OPSLIMIT/MEMLIMIT combination needs.
 		std::cout << "Out of memory during hashing process.\n";
 		return;
 	}
@@ -186,10 +139,6 @@ static void create(const unsigned char key[crypto_generichash_KEYBYTES]) {
 	}
 }
 
-// Logs an existing account in: derives the username lookup hash, finds the
-// matching record, and verifies the password against the stored Argon2id hash.
-// The failure message is identical whether the username is unknown or the
-// password is wrong, so it doesn't leak which usernames exist.
 static void read(const unsigned char key[crypto_generichash_KEYBYTES]) {
 	std::string user, pass;
 	std::cout << "Enter Username : \n";
@@ -209,7 +158,6 @@ static void read(const unsigned char key[crypto_generichash_KEYBYTES]) {
 	}
 }
 
-// Changes an existing account's password after verifying the current one.
 static void change_password(const unsigned char key[crypto_generichash_KEYBYTES]) {
 	std::string user, oldpass, newpass;
 	std::cout << "Enter Username : \n";
@@ -241,7 +189,6 @@ static void change_password(const unsigned char key[crypto_generichash_KEYBYTES]
 	}
 }
 
-// Deletes an account after verifying its password.
 static void delete_account(const unsigned char key[crypto_generichash_KEYBYTES]) {
 	std::string user, pass;
 	std::cout << "Enter Username : \n";
@@ -264,13 +211,7 @@ static void delete_account(const unsigned char key[crypto_generichash_KEYBYTES])
 }
 
 
-// ---------------------------------------------------------------------------
-// Menu loop
-// ---------------------------------------------------------------------------
-
 int main() {
-	// sodium_init() must succeed before any other libsodium call; bail out
-	// rather than running hashing calls against an uninitialized library.
 	if (sodium_init() < 0) {
 		std::cout << "libsodium init failure\n";
 		return 1;
@@ -290,8 +231,6 @@ int main() {
 
 		int choice;
 		if (!(std::cin >> choice)) {
-			// Non-numeric input would otherwise leave cin in a failed state
-			// and spin the loop forever; clear the error and discard the line.
 			std::cin.clear();
 			std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 			std::cout << "Invalid input. Please enter a number.\n";
